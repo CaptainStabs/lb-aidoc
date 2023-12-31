@@ -1,64 +1,75 @@
 local QBCore = exports['qb-core']:GetCoreObject()
 
 local Active = false
-local Revived = false
-local calledHelp = false
 local veh = nil
 local ped1 = nil
 local ped2 = nil
+local spam = true
 local ANIM_DICT = "mini@cpr@char_a@cpr_str"
-local REVIVE_TIME = Config.ReviveTime * 1000
+local REVIVE_TIME = Config.ReviveTime
 local PRICE = Config.Price
 
-local lastDoctorTime = 0
-local sleep = 200
+function Notify(msg, state)
+    QBCore.Functions.Notify(msg, state)
+end
 
-TriggerEvent('chat:addSuggestion', '/help', 'Call a Local Paramedic')
-RegisterCommand("help", function(source, args, raw)
+local lastDoctorTime = 0
+
+RegisterNetEvent('ai_doctor:help', function()
     local playerData = QBCore.Functions.GetPlayerData()
 
     if not playerData.metadata["isdead"] and not playerData.metadata["inlaststand"] then
-        QBCore.Functions.Notify("This can only be used when dead", "error")
-		TriggerServerEvent("qb-log:server:CreateLog", "commands", "Help Command Fail", "red", "Player **".. playerData.name .. "** Character Name: **" .. playerData.charinfo["firstname"] .. " " .. playerData.charinfo["lastname"] .. "** attempted to use /help while not dead.")
+        Notify("This can only be used when dead", "error")
         return
     end
 
-    if not playerData.metadata["injail"] then
-        QBCore.Functions.Notify("This can't be used when in jail", "error")
+    if not spam then
         return
     end
 
     QBCore.Functions.TriggerCallback('lb:docOnline', function(EMSOnline, hasEnoughMoney)
         if EMSOnline <= Config.Doctor and hasEnoughMoney then
-            if not calledHelp then
-                calledHelp = true
-                Revived = false
-                lastDoctorTime = GetGameTimer()
-                QBCore.Functions.Notify("Paramedic is on its Way", "primary", 60000)
-                TriggerServerEvent("qb-log:server:CreateLog", "commands", "Help Command Success", "blue", "Player **".. playerData.name .. "** Character Name: **" .. playerData.charinfo["firstname"] .. " " .. playerData.charinfo["lastname"] .. "** used /help! A ambulance is on the way to revive them.")
-                SpawnVehicle(GetEntityCoords(PlayerPedId()))
-            else
-                QBCore.Functions.Notify("You've already called for help, please be patient", "error")
-            end
+            SpawnVehicle(GetEntityCoords(PlayerPedId()))
+            TriggerServerEvent('lb:charge')
+            Notify("Medic is arriving")
+            lastDoctorTime = GetGameTimer()
         elseif EMSOnline > Config.Doctor then
-            QBCore.Functions.Notify("There are too many medics on duty", "error")
+            Notify("There are too many medics on duty", "error")
         elseif not hasEnoughMoney then
-            QBCore.Functions.Notify("Not Enough Money", "error")
+            Notify("Not Enough Money", "error")
+        else
+            Notify("Wait Paramedic is on its Way", "primary")
         end
     end)
 end)
 
+Citizen.CreateThread(function()
+    while true do
+        Citizen.Wait(1000)
+        -- If the doctor can't reach the player withing 2 minutes, tp the player to the doctor
+        if lastDoctorTime > 0 and GetGameTimer() - lastDoctorTime >= 120000 then
+            local playerPed = PlayerPedId()
+            local ld = GetEntityCoords(ped1)
+            if DoesEntityExist(ped1) then
+                print('DOC: Teleporting player now due to distance')
+                SetEntityCoords(playerPed, ld.x + 5.0, ld.y + 5.0, ld.z, 0, 0, 0, 1)
+            end
+            lastDoctorTime = 0
+        end
+    end
+end)
+
 function SpawnVehicle(x, y, z)
     spam = false
-    local vehhash = GetHashKey("ambulance")
+    local vehhash = GetHashKey("yas1")
 
     RequestModel(vehhash)
     RequestModel('s_m_m_paramedic_01')
     while not HasModelLoaded(vehhash) or not HasModelLoaded('s_m_m_paramedic_01') do
-        Wait(1)
+        Citizen.Wait(1)
     end
 
-    local spawnRadius = 60
+    local spawnRadius = 40
     local loc = GetEntityCoords(PlayerPedId())
     local found, spawnPos, spawnHeading = GetClosestVehicleNodeWithHeading(loc.x + math.random(-spawnRadius, spawnRadius), loc.y + math.random(-spawnRadius, spawnRadius), loc.z, 0, 3, 0)
 
@@ -79,9 +90,6 @@ function SpawnVehicle(x, y, z)
     SetBlipFlashes(docBlip, true)
     SetBlipColour(docBlip, 5)
 
-    SetEntityInvincible(docPed, true)
-    SetEntityInvincible(passengerPed, true)
-
     PlaySoundFrontend(-1, "Text_Arrive_Tone", "Phone_SoundSet_Default", 1)
     Wait(2000)
 
@@ -92,62 +100,57 @@ function SpawnVehicle(x, y, z)
     ped1 = docPed
 	ped2 = passengerPed
     Active = true
-    docEnRoute()
 end
 
-function docEnRoute()
-    while not Revived do
-        sleep = 200
-        local playerPed = GetPlayerPed(-1)
-        local loc = GetEntityCoords(playerPed)
-        local lc = GetEntityCoords(veh)
-        local ld = GetEntityCoords(ped1)
-        local dist = #(loc - lc)
-        local dist1 = #(loc - ld)
-        local time = GetGameTimer()
-        local timer = (time - lastDoctorTime)/1000
-        if Config.Debug then print('Doc En Route - Dist: '..dist, 'Dist1: '..dist1, 'Time: '..time, 'lastDoctorTime: '..lastDoctorTime, 'Timer: '..timer..' seconds') end
-        if dist <= 10 then
-            SetVehicleSiren(docVeh, false)
-            if IsPedInAnyVehicle(playerPed, false) then
-                local veh = GetVehiclePedIsIn(playerPed, false)
-                TaskLeaveVehicle(playerPed, veh, 16)
-            elseif Active then
-                TaskGoToCoordAnyMeans(ped1, loc.x, loc.y, loc.z, 3.0, 0, 0, 786603, 0xbf800000)
-            end
-            if dist1 <= 1.5 then
-                Active = false
-                DoctorNPC()
-                break
-            end
-        elseif lastDoctorTime > 0 and timer >= Config.TPTime then
-            sleep = 3000
-            SetVehicleSiren(docVeh, false)
-            ClearPedTasksImmediately(ped1)
-            if Config.Debug then print('TP to AI Doc Triggered') end
-            if DoesEntityExist(ped1) then
-                DoScreenFadeOut(500)
-                SetEntityCoords(playerPed, ld.x + 5.0, ld.y + 5.0, ld.z, 0, 0, 0, 1)
-                Wait(2500)
-                DoScreenFadeIn(1500)
-                lastDoctorTime = 0
+Citizen.CreateThread(function()
+    while true do
+        Citizen.Wait(200)
+        if Active then
+            local playerPed = GetPlayerPed(-1)
+            local loc = GetEntityCoords(playerPed)
+            local lc = GetEntityCoords(veh)
+            local ld = GetEntityCoords(ped1)
+            local dist = Vdist(loc, lc)
+            local dist1 = Vdist(loc, ld)
+            print('ACTIVE Loop: dist: ' .. dist .. ' dist1: ' .. dist1)
+            if dist <= 10 then
+                if Active then
+                    print('DOC: GOING TO PLAYER (line 116)')
+                    TaskGoToCoordAnyMeans(ped1, loc.x, loc.y, loc.z, 3.0, 0, 0, 786603, 0xbf800000)
+                    Citizen.Wait(5000)
+                    DoctorNPC()
+                    Active = false
+                end
+                if dist1 <= 1.33 then 
+                    Active = false
+                    ClearPedTasksImmediately(ped1)
+                    if IsPedInAnyVehicle(playerPed, false) then
+                        local veh = GetVehiclePedIsIn(playerPed, false)
+                        SetEntityCoords(playerPed, ld.x + 1.0, ld.y + 1.0, ld.z, 0, 0, 0, 1)
+                        print('DOC: Player in vehicle, teleporting')
+                        DoctorNPC()
+                    else
+                        DoctorNPC()
+                    end
+                    
+                end
             end
         end
-        Wait(sleep)
     end
-end
+end)
 
 function DoctorNPC()
-    if Config.Debug then print('DoctorNPC Triggered') end
+    print('DoctorNPC()')
 	RequestAnimDict(ANIM_DICT)
 	while not HasAnimDictLoaded(ANIM_DICT) do
-		Wait(1000)
+        print('DOC: Loading animations')
+		Citizen.Wait(1000)
 	end
 
 	TaskPlayAnim(ped1, ANIM_DICT, "cpr_pumpchest", 1.0, 1.0, -1, 9, 1.0, 0, 0, 0)
 
 	PlayAmbientSpeech1(ped1, "GENERIC_CURSE_HIGH", "SPEECH_PARAMS_FORCE", 3)
-	Wait(2000)
+	Citizen.Wait(2000)
 	PlayAmbientSpeech1(ped2, "GENERIC_INSULT_HIGH", "SPEECH_PARAMS_FORCE", 3)
 
 	QBCore.Functions.Progressbar("revive_doc", "HANG IN THERE BUDDY!!", REVIVE_TIME, false, false, {
@@ -157,29 +160,18 @@ function DoctorNPC()
 		disableCombat = true,
 	}, {}, {}, {}, function()
 		ClearPedTasks(ped1)
-		Wait(500)
+		Citizen.Wait(500)
 		TriggerEvent("hospital:client:Revive")
-        TriggerServerEvent('lb:charge')
 		StopScreenEffect('DeathFailOut')
-		QBCore.Functions.Notify("Your treatment is done, you were charged: $"..Config.Price, "success")
-		TriggerServerEvent("qb-log:server:CreateLog", "commands", "Help Command Healed", "green", "Player **".. QBCore.Functions.GetPlayerData().name .. "** Character Name: **" .. QBCore.Functions.GetPlayerData().charinfo["firstname"] .. " " .. QBCore.Functions.GetPlayerData().charinfo["lastname"] .. "** was healed by the AI Doc.")
-        calledHelp = false
-        Revived = true
+		Notify("Here's a lollipop, you were charged: "..PRICE, "success")
 
-		--RemovePedElegantly(ped1)
+		RemovePedElegantly(ped1)
 		TaskEnterVehicle(ped1, veh, 0, 2, 3.0, 1, 0)
 		TaskVehicleDriveWander(ped1, veh, 25.0, 524295)
 		Wait(20000)
 		DeleteEntity(veh)
 		DeleteEntity(ped1)
 		DeleteEntity(ped2)
+		spam = true
 	end)
 end
-
-AddEventHandler('onResourceStop', function(resource)
-	if resource == GetCurrentResourceName() then
-		DeleteEntity(veh)
-		DeleteEntity(ped1)
-		DeleteEntity(ped2)
-    end
-end)
